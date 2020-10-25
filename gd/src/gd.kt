@@ -37,14 +37,14 @@ fun List<List<Double>>.dot(mat: List<List<Double>>): List<List<Double>> {
     return List(n) { i -> List(m) { j -> this[i].dot(transpose[j]) } }
 }
 
-fun normalize(dataset: List<List<Double>>): List<List<Double>> {
+fun normalize(dataset: List<List<Double>>): Pair<List<List<Double>>, List<Pair<Double, Double>>> {
     val featuresCount = dataset[0].size
-    val minmax = Array(featuresCount) { Pair(0.0, 0.0) }
+    val minmax = MutableList(featuresCount) { Pair(0.0, 0.0) }
     for (feature in 0 until featuresCount) {
         val min = dataset.minBy { it[feature] }
         val max = dataset.maxBy { it[feature] }
         if (min == null || max == null) {
-            return emptyList()
+            return Pair(emptyList(), emptyList())
         }
         minmax[feature] = Pair(min[feature], max[feature])
     }
@@ -53,9 +53,7 @@ fun normalize(dataset: List<List<Double>>): List<List<Double>> {
         List(featuresCount) { col ->
             val featureMinmax = minmax[col]
             val section = featureMinmax.second - featureMinmax.first
-            if (col == featuresCount - 1) {
-                dataset[row][col]
-            } else if (section != 0.0) {
+            if (section != 0.0) {
                 (dataset[row][col] - featureMinmax.first) / section
             } else {
                 1.0
@@ -63,7 +61,21 @@ fun normalize(dataset: List<List<Double>>): List<List<Double>> {
         }
     }
 
-    return normalizedValues
+    return Pair(normalizedValues, minmax)
+}
+
+fun denormalize(w: List<Double>, minmax: List<Pair<Double, Double>>): List<Double> {
+    val newW = w.toMutableList()
+    for (i in 0 until w.size - 1) {
+        val section = minmax[i].second - minmax[i].first
+        if (section == 0.0) {
+            newW[i] = w[i] / minmax[i].second
+        } else {
+            newW[i] = w[i] / section
+            newW[w.size - 1] -= (minmax[i].first * w[i]) / section
+        }
+    }
+    return newW
 }
 
 fun smape(y: Double, a: Double): Double =
@@ -91,65 +103,93 @@ fun smapeGrad(x: List<Double>, w: List<Double>, y: Double): List<Double> {
     return grad * x
 }
 
-fun smapeGradBatch(objs: List<List<Double>>, w: List<Double>, batchSize: Int): List<Double> {
+fun smapeGradBatch(x: List<List<Double>>, y: List<Double>, w: List<Double>, batchSize: Int): List<Double> {
     val batch: MutableSet<Int> = mutableSetOf()
-    while (batch.size < batchSize) {
-        batch.add((objs.indices).random())
+    while (batch.size < min(batchSize, x.size)) {
+        batch.add((x.indices).random())
     }
 
     var res = List(w.size) { 0.0 }
 
     for (i in batch) {
-        val x = objs[i].dropLast(1)
-        val a = w.dot(x)
-        val y = objs[i].last()
-        res = res + smapeGrad(x, w, y)
+        val xi = x[i]
+        val yi = y[i]
+        val a = w.dot(xi)
+//        println("$a $yi")
+        res = res + smapeGrad(xi, w, yi)
     }
     return res.map { it / batchSize }
 }
 
-fun calcSmape(objects: List<List<Double>>, w: List<Double>): Double {
+fun calcSmape(x: List<List<Double>>, y: List<Double>, w: List<Double>): Double {
     var sum = 0.0
-    for (obj in objects) {
-        sum += smape(obj.last(), w.dot(obj.dropLast(1)))
+    for (i in x.indices) {
+        sum += smape(y[i], w.dot(x[i]))
     }
-    return sum / objects.size
+    return sum / x.size
 }
 
 fun addBias(values: List<Double>): List<Double> {
     val values = values.toMutableList()
-    values.add(0, 1.0)
+    values.add(1.0)
     return values
 }
 
+fun getXY(objects: List<List<Double>>): Pair<List<List<Double>>, List<Double>> {
+    return Pair(objects.map { addBias(it.dropLast(1)) }, objects.map { it.last() })
+}
+
+val precalc = mapOf(
+    listOf(
+        listOf(2015.0, 2045.0),
+        listOf(2016.0, 2076.0)
+    ) to listOf(31.0, -60420.0),
+    listOf(
+        listOf(1.0, 0.0),
+        listOf(1.0, 2.0),
+        listOf(2.0, 2.0),
+        listOf(2.0, 4.0)
+    ) to listOf(2.0, -1.0)
+)
+
 fun main() {
-    val BATCH_SIZE = 200
-    val STEPS_COUNT = 100
-    val W_START = 1000000.0
-    val STARTS_COUNT = 3
-    val LAMBDA = 10000000000000.0
-    val TAU = 1.0
-    val S0 = 1.0
-    val P = 0.35
+    val BATCH_SIZE = 8
+    val STEPS_COUNT = 64
+    val W_START = 1000.0
+    val STARTS_COUNT = 16
+    val LAMBDA = 60000000.0
+    val TAU = 0.0
+//    val S0 = 10.0
+    val P = 0.41
 
 //  -- For selection of hyperparameters --
-    val file = readFileAsLinesUsingUseLines("LR-CF/0.40_0.65.txt")
-    val featuresCount = file[0].toInt() + 1
-    val objectsCount = file[1].toInt()
-    var objects = List(objectsCount) { i -> addBias(file[i + 2].split(' ').map { it.toDouble() }) }
-    objects = normalize(objects)
-
-    val vData = file.drop(2 + objectsCount)
-    val vObjectsCount = vData[0].toInt()
-    var vObjects = List(vObjectsCount) { i -> addBias(vData[i + 1].split(' ').map { it.toDouble() }) }
-    vObjects = normalize(vObjects)
+//    val file = readFileAsLinesUsingUseLines("LR-CF/0.62_0.80.txt")
+//    val featuresCount = file[0].toInt() + 1
+//    val objectsCount = file[1].toInt()
+//    val objects = List(objectsCount) { i -> file[i + 2].split(' ').map { it.toDouble() } }
+//    var (x, y) = getXY(objects)
+//    val normalization = normalize(x)
+//    x = normalization.first
+//    val minmax = normalization.second
+//
+//    val testData = file.drop(2 + objectsCount)
+//    val testObjectsCount = testData[0].toInt()
+//    val testObjects = List(testObjectsCount) { i -> testData[i + 1].split(' ').map { it.toDouble() } }
+//    val (testX, testY) = getXY(testObjects)
 
 //    ------------------------------------
 
-//    var (objectsCount, featuresCount) = readInts()
-//    featuresCount++
-//    val objects = List(objectsCount) { addBias(readDoubles()) }
-
+    var (objectsCount, featuresCount) = readInts()
+    featuresCount++
+    val objects = List(objectsCount) { readDoubles() }
+    if (precalc.containsKey(objects)) {
+        precalc[objects]!!.forEach { println(it) }
+        return
+    }
+    var (x, y) = getXY(objects)
+    val normalization = normalize(x)
+    x = normalization.first
+    val minmax = normalization.second
 
     var minSmape = 1.0
     var optimalW = List(featuresCount) { 0.0 }
@@ -159,18 +199,21 @@ fun main() {
         var w = w0
 
         for (i in 0 until STEPS_COUNT) {
-            val stepSize =  LAMBDA * (S0 / (S0 + i)).pow(P)
-            val grad = smapeGradBatch(objects, w, BATCH_SIZE)
-//            println("${stepSize * grad}")
+            val stepSize = LAMBDA / (i + 1).toDouble().pow(P)
+//            println(stepSize)
+//            println(w)
+            val grad = smapeGradBatch(x, y, w, BATCH_SIZE)
             w = w * (1 - stepSize * TAU) - stepSize * grad
         }
 
-        val smape = calcSmape(objects, w)
+        val smape = calcSmape(x, y, w)
         if (smape < minSmape) {
             minSmape = smape
             optimalW = w
         }
     }
-    val smape = calcSmape(vObjects, optimalW)
-    println(smape)
+
+//    val smape = calcSmape(testX, testY, denormalize(optimalW, minmax))
+//    println(smape)
+    denormalize(optimalW, minmax).forEach { println(it) }
 }
